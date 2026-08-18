@@ -1,0 +1,8 @@
+{
+  "name": "dsh-opencode-zen",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "description": "OpenCode Zen CLI-header patch auto-repair for dsh-llm-pi-ai. On every boot this plugin checks whether the dsh-llm-pi-ai module still carries the opencodeClientHeaders injection and re-applies it if a package reinstall wiped it."
+}
