@@ -1,8 +1,41 @@
 {
   "name": "dsh-opencode-zen",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
-  "description": "OpenCode Zen CLI-header patch auto-repair for dsh-llm-pi-ai. On every boot this plugin checks whether the dsh-llm-pi-ai module still carries the opencodeClientHeaders injection and re-applies it if a package reinstall wiped it."
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "description": "OpenCode Zen/Go client-identity headers for DSH, injected at the fetch layer with a dedicated Web Settings section.",
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node test/smoke.mjs && node test/client-smoke.mjs"
+  },
+  "dependencies": {
+    "schemastery": "*"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
+      ],
+      "platform": "web"
+    }
+  },
+  "license": "MIT"
 }

@@ -1,0 +1,9 @@
+# dsh-opencode-zen bundle patch
+#
+# Mounts the plugin as a loader entry. The `name` must equal the package name:
+# @deepseek-ai/dsh-client-modules scans loader entries for web `dsh.client`
+# declarations by name, and the browser kernel adopts the matching bundle row
+# as a plugin entry (host half + settings section).
+- insert:
+    - id: opencode-zen
+      name: 'dsh-opencode-zen'
