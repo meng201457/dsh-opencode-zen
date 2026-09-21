@@ -70,6 +70,13 @@ assert.deepEqual(JSON.parse(JSON.stringify(resolved.hosts)), ["opencode.ai"]);
 assert.equal(resolved.userAgent, mod.DEFAULT_USER_AGENT);
 assert.equal(resolved.fallbackSession, "dsh-default");
 assert.equal(resolved.provider, "opencode");
+assert.equal(resolved.injectGateTools, true, "gate-tool injection defaults on");
+assert.deepEqual(JSON.parse(JSON.stringify(resolved.gateToolNames)), ["bash", "read"]);
+assert.deepEqual(
+	JSON.parse(JSON.stringify(mod.defaultSettings())).gateToolNames,
+	["bash", "read"],
+	"defaultSettings mirrors the schema default"
+);
 assert.equal(resolved.debug, false);
 
 // unknown sessionMode is rejected by the union

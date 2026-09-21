@@ -1,6 +1,6 @@
 {
   "name": "dsh-opencode-zen",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -17,7 +17,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/smoke.mjs && node test/client-smoke.mjs"
+    "test": "node test/smoke.mjs && node test/client-smoke.mjs && node test/mount.mjs"
   },
   "dependencies": {
     "schemastery": "*"
@@ -30,7 +30,6 @@
       "inject": [
         "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-settings",
         "@deepseek-ai/dsh-api-remotes"
       ],

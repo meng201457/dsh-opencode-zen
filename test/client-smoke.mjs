@@ -64,9 +64,17 @@ assert.equal(json(moduleExports.parseHosts("opencode.ai\n\n  api.opencode.ai  ")
 assert.equal(json(moduleExports.parseExtraHeaders("x-a: 1\n\nnot a header\nx-b: two")), json({ "x-a": "1", "x-b": "two" }));
 assert.equal(moduleExports.validUserAgent("opencode/latest/1.18.30/cli"), true);
 assert.equal(moduleExports.validUserAgent("opencode/1.18.30"), true);
-assert.equal(moduleExports.validUserAgent("curl/8.7.1"), true);
+assert.equal(moduleExports.validUserAgent("opencode/1.18.0"), true);
+// The Zen free tier parses the version out of this header and refuses anything
+// below 1.18.0 with 426, so a UA that names no usable version is invalid here.
+assert.equal(moduleExports.validUserAgent("opencode/1.10.0"), false);
+assert.equal(moduleExports.validUserAgent("opencode/latest"), false);
+assert.equal(moduleExports.validUserAgent("curl/8.7.1"), false);
 assert.equal(moduleExports.validUserAgent(""), false);
 assert.equal(moduleExports.validUserAgent("no-slash-here"), false);
+assert.equal(json(moduleExports.parseClientVersion("opencode/latest/1.18.30/cli")), json([1, 18, 30]));
+assert.equal(moduleExports.clientVersionMeetsFloor("opencode/1.18.0"), true);
+assert.equal(moduleExports.clientVersionMeetsFloor("opencode/1.17.99"), false);
 assert.equal(moduleExports.validHosts("opencode.ai\napi.opencode.ai"), true);
 assert.equal(moduleExports.validHosts("has space.com"), false);
 assert.equal(moduleExports.validHosts("not a domain"), false);
@@ -82,6 +90,8 @@ const seeded = {
 	fallbackSession: "dsh-default",
 	provider: "opencode",
 	extraHeaders: {},
+	injectGateTools: true,
+	gateToolNames: ["bash", "read"],
 	debug: false
 };
 let currentValue = JSON.parse(JSON.stringify(seeded));
@@ -185,13 +195,24 @@ face.editSessionMode("random");
 face.editProvider("opencode-go");
 face.editDebug(true);
 
+// gate-tool names round-trip, and reject a name that could never match
+face.editGateToolNames("bash\nread\nskill");
+assert.equal(json(face.hooks.opencodeZenSettings.getSnapshot().draft.gateToolNames), json(["bash", "read", "skill"]));
+assert.equal(face.hooks.opencodeZenSettings.getSnapshot().invalid, false);
+face.editGateToolNames("has space");
+assert.equal(face.hooks.opencodeZenSettings.getSnapshot().invalid, true, "a tool name with a space is invalid");
+face.editGateToolNames("bash\nread");
+
 await face.save();
 assert.deepEqual(
 	writes.map((w) => w[0]),
-	["enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession", "provider", "extraHeaders", "debug"]
+	["enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession", "provider", "extraHeaders",
+		"injectGateTools", "gateToolNames", "debug"]
 );assert.equal(writes.find((w) => w[0] === "userAgent")[1], "opencode/1.18.30");
 assert.equal(writes.find((w) => w[0] === "sessionMode")[1], "random");
 assert.equal(json(writes.find((w) => w[0] === "extraHeaders")[1]), json({ "x-opencode-project": "global", "x-extra": "1" }));
+assert.equal(writes.find((w) => w[0] === "injectGateTools")[1], true);
+assert.equal(json(writes.find((w) => w[0] === "gateToolNames")[1]), json(["bash", "read"]));
 
 const afterSave = face.hooks.opencodeZenSettings.getSnapshot();
 assert.equal(afterSave.dirty, false);
@@ -220,6 +241,8 @@ const props = {
 	editFallbackSession: face.editFallbackSession,
 	editHosts: face.editHosts,
 	editHeaders: face.editHeaders,
+	editInjectGateTools: face.editInjectGateTools,
+	editGateToolNames: face.editGateToolNames,
 	editDebug: face.editDebug,
 	save: face.save,
 	discard: face.discard
@@ -229,10 +252,35 @@ assert.equal(tree.type, "div", "section renders a div (settings page body)");
 const text = JSON.stringify(tree);
 assert.ok(text.includes("title"), "renders title copy");
 assert.ok(text.includes("note1"), "renders the notes block");
+assert.ok(text.includes("note4"), "renders the free-tier tool-gate note");
 assert.ok(text.includes("opencode.ai"), "renders the host list");
 assert.ok(text.includes("opencode-go"), "renders the current provider");
 assert.ok(text.includes("save"), "renders the save action");
 assert.ok(text.includes("x-opencode-project"), "renders the extra-header textarea");
+assert.ok(text.includes("gateTools"), "renders the gate-tool toggle");
+assert.ok(text.includes("bash"), "renders the required tool-name textarea");
+
+// the tool-name field stays visible but disabled while injection is off
+// (the stub createElement keeps children on `node.children`, not props)
+const textareas = (node, found = []) => {
+	if (node === null || typeof node !== "object") return found;
+	if (Array.isArray(node)) { for (const child of node) textareas(child, found); return found; }
+	if (node.props?.className === "dshoz-textarea") found.push(node);
+	textareas(node.children, found);
+	return found;
+};
+const onAreas = textareas(tree);
+assert.equal(onAreas.length, 3, "renders hosts, extra-headers and tool-name textareas");
+assert.equal(onAreas[2].props.value, "bash\nread", "the tool-name textarea shows the required names");
+assert.equal(onAreas[2].props.disabled, false);
+
+face.editInjectGateTools(false);
+const offTree = component({ ...props, useOpencodeZenSettings: (sel) => sel(face.hooks.opencodeZenSettings.getSnapshot()) });
+const offAreas = textareas(offTree);
+assert.equal(offAreas.length, 3, "the tool-name field stays visible when injection is off");
+assert.equal(offAreas[2].props.disabled, true, "the tool-name field is disabled when injection is off");
+face.editInjectGateTools(true);
+face.discard();
 
 console.log("dsh-opencode-zen client smoke: all check groups passed");
 console.log("  parsers, validation, section registration, save, discard, render — OK");
