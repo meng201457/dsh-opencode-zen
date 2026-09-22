@@ -4,9 +4,12 @@
  * Simulates the client module system without a browser:
  *  - provides `window.__ModuleLoader__.load` and captures the factory;
  *  - materializes the factory with a stub `require("react")`;
- *  - calls the exported `apply(ctx)` against a fake cordis ctx + settings scope;
- *  - drives the section controller (draft, validation, save -> scope.set) and
- *    renders the section component to verify it builds an element tree.
+ *  - calls the exported `apply(ctx)` against a fake cordis ctx exposing the
+ *    0.1.7 `configForms` service (`get` / `whileServed`) plus `slots` and
+ *    `locale`;
+ *  - drives the configuration controller (draft, validation, save -> mutate),
+ *    checks the served-entry gate, and renders the component to verify it
+ *    builds an element tree.
  */
 import vm from "node:vm";
 import assert from "node:assert/strict";
@@ -54,7 +57,11 @@ const moduleExports = captured.factory(function require(specifier) {
 	throw new Error(`unexpected require: ${specifier}`);
 });
 assert.equal(typeof moduleExports.apply, "function");
-assert.equal([...moduleExports.inject].join(","), "slots,locale,settingsScope");
+assert.equal(
+	[...moduleExports.inject].join(","),
+	"slots,locale,configForms",
+	"0.1.7 client services: settingsScope is gone, configForms replaces it"
+);
 
 // ── parser unit checks (exported for exactly this) ──
 // NOTE: values produced inside the vm realm have foreign prototypes, so compare
@@ -79,8 +86,9 @@ assert.equal(moduleExports.validHosts("opencode.ai\napi.opencode.ai"), true);
 assert.equal(moduleExports.validHosts("has space.com"), false);
 assert.equal(moduleExports.validHosts("not a domain"), false);
 
-// ── fake cordis ctx + settings scope ──
-const writes = [];
+// ── fake configForms form (the 0.1.7 shared ConfigForm) ──
+const mutations = [];
+let mutateAccepts = true;
 const seeded = {
 	enabled: true,
 	userAgent: "opencode/latest/1.18.30/cli",
@@ -95,35 +103,86 @@ const seeded = {
 	debug: false
 };
 let currentValue = JSON.parse(JSON.stringify(seeded));
-const scopeListeners = new Set();
-const fakeScope = {
+const formListeners = new Set();
+const fakeForm = {
 	getSnapshot() {
-		return { status: "ready", writable: true, value: currentValue, base: {}, user: {}, revision: 1 };
+		return { status: "ready", writable: true, value: currentValue, base: {}, user: {}, revision: 1, mode: "host" };
 	},
 	subscribe(fn) {
-		scopeListeners.add(fn);
-		return () => scopeListeners.delete(fn);
+		formListeners.add(fn);
+		return () => formListeners.delete(fn);
 	},
-	async set(field, value) {
-		writes.push([field, value]);
-		currentValue = { ...currentValue, [field]: JSON.parse(JSON.stringify(value)) };
-		for (const fn of [...scopeListeners]) {
+	async mutate(ops) {
+		mutations.push(ops);
+		if (!mutateAccepts) return false;
+		const next = JSON.parse(JSON.stringify(currentValue));
+		for (const op of ops) next[op.path[0]] = JSON.parse(JSON.stringify(op.value));
+		currentValue = next;
+		for (const fn of [...formListeners]) {
 			try { fn(); } catch (e) { console.error("listener error:", e); }
 		}
+		return true;
 	}
 };
 const slotsInjectCalls = [];
 const registered = [];
+const formIdsRequested = [];
+// The Plugins page serves a bundle's configuration only while the Host serves
+// the namespace, so the client half gates registration through `whileServed`.
+let servedNamespaces = ["opencode-zen"];
+const describeListeners = new Set();
+const fakeDescribe = {
+	getSnapshot: () => ({ view: { namespaces: servedNamespaces.map((ns) => ({ ns })) } }),
+	subscribe(fn) {
+		describeListeners.add(fn);
+		return () => describeListeners.delete(fn);
+	},
+	ensure() {}
+};
+const publishServed = () => { for (const fn of [...describeListeners]) fn(); };
 const fakeCtx = {
-	settingsScope: { bind: (spec) => { assert.equal(spec.namespace, "opencode-zen"); return fakeScope; } },
+	configForms: {
+		get(entryId) {
+			formIdsRequested.push(entryId);
+			return fakeForm;
+		},
+		// Mirrors @deepseek-ai/dsh-client-ui-settings: register once a watched
+		// namespace is in the describe mirror, dispose when none is.
+		whileServed(namespaces, register) {
+			let off;
+			const sync = () => {
+				const served = new Set(fakeDescribe.getSnapshot().view?.namespaces.map((view) => view.ns) ?? []);
+				const watched = namespaces.some((namespace) => served.has(namespace));
+				if (watched && off === void 0) off = register(served);
+				else if (!watched && off !== void 0) { off(); off = void 0; }
+			};
+			const unsubscribe = fakeDescribe.subscribe(sync);
+			fakeDescribe.ensure();
+			sync();
+			return () => { unsubscribe(); if (off !== void 0) off(); off = void 0; };
+		}
+	},
 	slots: {
 		register(options, component) {
-			return { ...options, component };
+			const entry = { ...options, component };
+			registered.push(entry);
+			return () => {
+				const index = registered.indexOf(entry);
+				if (index >= 0) registered.splice(index, 1);
+			};
 		},
 		inject(name, callback) {
 			slotsInjectCalls.push(name);
-			for (const d of callback() ?? []) registered.push(d);
-			return () => {};
+			// The real contract: the callback returns one disposer (or an iterable
+			// of them), installed through the caller's `ctx.effect`.
+			const ret = callback();
+			const disposers = typeof ret === "function" ? [ret] : [...(ret ?? [])];
+			let active = true;
+			return () => {
+				if (!active) return;
+				active = false;
+				for (const dispose of disposers) if (typeof dispose === "function") dispose();
+			};
 		}
 	},
 	locale: {
@@ -141,13 +200,28 @@ const fakeCtx = {
 };
 moduleExports.apply(fakeCtx);
 
-assert.deepEqual(slotsInjectCalls, ["settings.section"], "registers a dedicated settings SECTION");
+assert.deepEqual(
+	formIdsRequested,
+	["opencode-zen"],
+	"asks configForms for the Host entry id from cordis.patch.yml, not the package name"
+);
+assert.deepEqual(slotsInjectCalls, ["plugins.bundle.config"], "registers into the Plugins page's bundle-configuration slot");
 assert.equal(registered.length, 1);
 const section = registered[0];
-assert.equal(section.name, "settings.section");
-assert.equal(section.id, "opencode-zen");
+assert.equal(section.name, "plugins.bundle.config");
+assert.equal(section.key, "dsh-opencode-zen", "keyed by this package's name");
 assert.equal(section.locale, "dsh-opencode-zen");
-assert.equal(section.label(), "OpenCode Zen", "nav label follows the active locale");
+
+// The form is withheld while the Host does not serve the entry, and appears
+// when it starts to — the page pairs a bundle with its form by name, so a
+// deployment without the host half must show no form at all.
+servedNamespaces = ["someone-else"];
+publishServed();
+assert.equal(registered.length, 0, "the registration is withdrawn while the entry is unserved");
+servedNamespaces = ["opencode-zen"];
+publishServed();
+assert.equal(registered.length, 1, "registers once the entry is served");
+assert.equal(registered[0].key, "dsh-opencode-zen");
 
 // ── drive the controller ──
 const face = section.inject();
@@ -204,20 +278,38 @@ assert.equal(face.hooks.opencodeZenSettings.getSnapshot().invalid, true, "a tool
 face.editGateToolNames("bash\nread");
 
 await face.save();
-assert.deepEqual(
-	writes.map((w) => w[0]),
-	["enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession", "provider", "extraHeaders",
-		"injectGateTools", "gateToolNames", "debug"]
-);assert.equal(writes.find((w) => w[0] === "userAgent")[1], "opencode/1.18.30");
-assert.equal(writes.find((w) => w[0] === "sessionMode")[1], "random");
-assert.equal(json(writes.find((w) => w[0] === "extraHeaders")[1]), json({ "x-opencode-project": "global", "x-extra": "1" }));
-assert.equal(writes.find((w) => w[0] === "injectGateTools")[1], true);
-assert.equal(json(writes.find((w) => w[0] === "gateToolNames")[1]), json(["bash", "read"]));
+// One atomic mutation, not eleven independent writes: the Host applies the whole
+// batch under a single revision fence.
+assert.equal(mutations.length, 1, "save issues exactly one mutate call");
+const ops = mutations[0];
+assert.equal(
+	json(ops.map((op) => op.path[0])),
+	json(["enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession", "provider", "extraHeaders",
+		"injectGateTools", "gateToolNames", "debug"])
+);
+assert.equal(ops.every((op) => op.op === "set"), true, "every op is a set");
+const valueOf = (field) => ops.find((op) => op.path[0] === field).value;
+assert.equal(valueOf("userAgent"), "opencode/1.18.30");
+assert.equal(valueOf("sessionMode"), "random");
+assert.equal(json(valueOf("extraHeaders")), json({ "x-opencode-project": "global", "x-extra": "1" }));
+assert.equal(valueOf("injectGateTools"), true);
+assert.equal(json(valueOf("gateToolNames")), json(["bash", "read"]));
 
 const afterSave = face.hooks.opencodeZenSettings.getSnapshot();
 assert.equal(afterSave.dirty, false);
 assert.equal(afterSave.draft.provider, "opencode-go");
 assert.equal(afterSave.headersText, "x-opencode-project: global\nx-extra: 1");
+assert.equal(afterSave.failed, false);
+
+// a rejected mutation reports the failure and keeps the draft
+mutateAccepts = false;
+face.editProvider("rejected-provider");
+await face.save();
+snap = face.hooks.opencodeZenSettings.getSnapshot();
+assert.equal(snap.failed, true, "a rejected mutate surfaces as failed");
+assert.equal(snap.draft.provider, "rejected-provider", "the draft survives a rejected write");
+mutateAccepts = true;
+face.discard();
 
 // discard restores the accepted value
 face.editProvider("opencode");
@@ -248,9 +340,9 @@ const props = {
 	discard: face.discard
 };
 const tree = component(props);
-assert.equal(tree.type, "div", "section renders a div (settings page body)");
+assert.equal(tree.type, "div", "the form renders a div (the page supplies the title)");
 const text = JSON.stringify(tree);
-assert.ok(text.includes("title"), "renders title copy");
+assert.ok(text.includes("intro"), "renders the explanatory lead");
 assert.ok(text.includes("note1"), "renders the notes block");
 assert.ok(text.includes("note4"), "renders the free-tier tool-gate note");
 assert.ok(text.includes("opencode.ai"), "renders the host list");
@@ -283,4 +375,4 @@ face.editInjectGateTools(true);
 face.discard();
 
 console.log("dsh-opencode-zen client smoke: all check groups passed");
-console.log("  parsers, validation, section registration, save, discard, render — OK");
+console.log("  parsers, validation, configForms entry id, bundle-config registration, served gate, mutate, discard, render — OK");

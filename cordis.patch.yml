@@ -3,7 +3,11 @@
 # Mounts the plugin as a loader entry. The `name` must equal the package name:
 # @deepseek-ai/dsh-client-modules scans loader entries for web `dsh.client`
 # declarations by name, and the browser kernel adopts the matching bundle row
-# as a plugin entry (host half + settings section).
+# as a plugin entry.
+#
+# The `id` is load-bearing, not cosmetic: @deepseek-ai/dsh-settings keys a
+# plugin's configuration form by `entry.options.id`, so the browser half must
+# call `configForms.get('opencode-zen')` with exactly this value.
 - insert:
     - id: opencode-zen
       name: 'dsh-opencode-zen'

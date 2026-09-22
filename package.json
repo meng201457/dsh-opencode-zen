@@ -1,6 +1,6 @@
 {
   "name": "dsh-opencode-zen",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -9,7 +9,7 @@
     "./client": "./lib/client.js",
     "./package.json": "./package.json"
   },
-  "description": "OpenCode Zen/Go client-identity headers for DSH, injected at the fetch layer with a dedicated Web Settings section.",
+  "description": "OpenCode Zen/Go client-identity headers for DSH, injected at the fetch layer with its configuration form on the Plugins page.",
   "files": [
     "lib/index.js",
     "lib/client.js",
@@ -20,7 +20,7 @@
     "test": "node test/smoke.mjs && node test/client-smoke.mjs && node test/mount.mjs"
   },
   "dependencies": {
-    "schemastery": "*"
+    "@deepseek-ai/schemastery": "^3.18.3"
   },
   "dsh": {
     "bundle": {
@@ -28,9 +28,9 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-api-remotes"
       ],
       "platform": "web"

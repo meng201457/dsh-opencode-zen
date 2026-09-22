@@ -1,8 +1,12 @@
 # dsh-opencode-zen
 
-给 **DeepSeek Harness (DSH)** 发往 `opencode.ai` 的请求注入 OpenCode 客户端标识头（Zen / Go 免费档与粘性路由所需），并在需要时补齐免费档要求的工具名，带独立的 **Web 设置界面**。
+给 **DeepSeek Harness (DSH)** 发往 `opencode.ai` 的请求注入 OpenCode 客户端标识头（Zen / Go 免费档与粘性路由所需），并在需要时补齐免费档要求的工具名，配置界面挂在官方 **Plugins** 页里。
 
 只作用于 `opencode.ai` 及其子域名；其他任何主机原样放行，一个字节不改。
+
+> **DSH 版本要求：`0.1.7-alpha.1` 及以上。** 0.1.7 改掉了插件配置的两侧 API
+> （客户端 `settingsScope` → `configForms`，宿主 `settings.register()` → 导出
+> `.volatile()` 的 `Config`），本版本已跟进，**不能**在 0.1.6 上运行。
 
 ---
 
@@ -76,14 +80,39 @@ fetch 层拿到的是**已经完全合并好的最终请求**，直接覆盖即�
 
 ## 安装
 
-```powershell
-# 1) profile 的 package.json 加依赖与 bundle
-#    依赖: "dsh-opencode-zen": "file:D:/工作项目/DSH/常规/dsh-opencode-zen"
-#    bundles 里加 "dsh-opencode-zen"
-pnpm install --dir "%USERPROFILE%\.dsh\profiles\web"
+用官方插件安装命令（在 profile 目录里跑 pnpm，并把声明了 `dsh.bundle` 的包自动追加进
+`dsh.profile.bundles`）：
 
-# 2) 重启 dsh web（宿主端代码在启动时装载）
+```powershell
+dsh plugin --profile web add D:/工作项目/DSH/常规/dsh-opencode-zen
+
+# 重启 dsh web（宿主端 index.js 在启动时装载）
 ```
+
+> **升级 DSH 后要重新装一次。** 实测：`0.1.6-alpha.2` → `0.1.7-alpha.1` 的升级会把
+> profile 重置回默认 bundles，本插件会从 `dependencies` 和 `dsh.profile.bundles`
+> 里一起掉出去。`dsh.profile.bundles` **只在启动时读取**（没有热重载），所以发现
+> 配置页不见了，先确认这两处还在不在，然后重启。
+
+Web 界面等效路径：侧边栏 **Plugins → Add plugin**，填同一个路径，装完点 **Enable now**。
+
+> 路径可以直接给绝对路径或 `link:` / `file:` 前缀。相对路径会按**你当前所在目录**
+> 解析（不是 profile 目录），所以脚本里建议写绝对路径。
+
+装完 profile 的 `package.json` 会变成：
+
+```jsonc
+{
+  "dependencies": { "dsh-opencode-zen": "link:D:/工作项目/DSH/常规/dsh-opencode-zen" },
+  "dsh": { "profile": { "bundles": ["...", "dsh-opencode-zen"] } }
+}
+```
+
+`link:` 是**软链**（`node_modules\dsh-opencode-zen` 是指向源码目录的 junction），不是拷贝：
+
+- **改 `lib/client.js` 不用任何同步操作** —— `dsh-client-hmr` 默认每 500ms 轮询一次
+  bundle，热重载会自己把新代码换进已打开的页面（React 组件状态会丢，会话/连接保留）。
+- **改 `lib/index.js`（宿主端）需要重启 dsh web**。
 
 启动日志应出现：
 
@@ -91,17 +120,19 @@ pnpm install --dir "%USERPROFILE%\.dsh\profiles\web"
 dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, gateTools=bash+read)
 ```
 
-> **改代码后必须同步**：`file:` 依赖是安装时的拷贝快照，不会自动跟进。
-> ```powershell
-> Copy-Item lib\index.js,lib\client.js "$env:USERPROFILE\.dsh\profiles\web\node_modules\dsh-opencode-zen\lib\" -Force
-> ```
-> `client.js` 由 `dsh-client-modules` 实时读盘，同步后**刷新浏览器**即可；宿主端 `index.js` 需**重启**。
+> **别再用旧的 `file:` + 手动拷贝**：`file:` 依赖是安装时的拷贝快照，改代码不会跟进，
+> 必须每次 `Copy-Item`。改用 `link:`（即上面的 `dsh plugin add`）就没这个问题。
+> 若 profile 里已经是 `file:`，重新跑一次 `dsh plugin --profile web add <绝对路径>`
+> 让它改写成 `link:`。
 
 ---
 
 ## 设置
 
-**设置 → OpenCode Zen**（独立一栏）。
+**Plugins → dsh-opencode-zen**（该包的详情页，表单在描述下方、子行列表上方）。
+
+> 早期版本把配置放在**设置 → OpenCode Zen** 这个独立一栏。现在改为注册进官方 Plugins 页，
+> 不再占用独立的设置栏。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -430,9 +461,9 @@ function tU(_, Y = Date.now()) {
 
 ```powershell
 node --check lib/index.js && node --check lib/client.js
-node test/smoke.mjs          # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁（40 项）
-node test/mount.mjs          # apply(ctx) 注册行为（inject/effect/on/schema/teardown）
-node test/client-smoke.mjs   # 浏览器端 section 冒烟（vm 模拟 __ModuleLoader__）
+node test/smoke.mjs          # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁（42 项）
+node test/mount.mjs          # apply(ctx, config)：Config/volatile 字段、默认值、effect/on/teardown、活引用更新
+node test/client-smoke.mjs   # 浏览器端冒烟：configForms 条目 id、bundle-config 注册、served 门禁、mutate、渲染（vm 模拟 __ModuleLoader__）
 ```
 
 宿主端导出的纯函数（`hostMatches` / `buildZenHeaders` / `stableZenId` /
@@ -464,7 +495,13 @@ node gate37.mjs 200 15 2 # 只变一个变量，每格两侧夹对照
 ## 设计说明
 
 - **fetch 管线挂在 `Symbol.for("dsh-opencode-zen.fetch.pipeline.v1")` 下**，与其他同样包装 `globalThis.fetch` 的插件（dsh-api-proxy、dsh-opencode-session-header 等）互不覆盖；`installFetchPipeline` 用 getter 定义 `globalThis.fetch`，并在他人赋值时重新组合链条。
-- **`settingsNamespace()` 已被 `@deepseek-ai/dsh-settings` 移除**（该包现只导出 `SettingsConflictError` / `SettingsProvider` / `default` / `redactSecrets`）。命名空间现在直接传字符串，由服务自身校验。`dshmarket/lib/settings.js` 的注释确认了这一移除。
+- **配置表单注册进 `plugins.bundle.config`，按包名做 key**（`dsh-opencode-zen`）。该槽位由 `@deepseek-ai/dsh-client-ui-plugin-manager` 在 `main` 面板的 `children` 里声明，`kind: 'keyed'`，key 就是 bundle 的包名 —— 页面对 bundle 和表单的配对规则。同一个包里另两个槽位是 `plugins.item`（官方 host-plane 配置页占用，卡片进 Official 分组）和 `plugins.row.config`（key 为 `<包名>#<rowId>`，配某个子行）。
+- **宿主半边（0.1.7 起）导出 `Config` schema，字段标 `.volatile()`**。DSH `0.1.7-alpha.1` 删掉了 `settings.register(ns, schema, opts)`：Loader 现在把插件模块导出的 `Config` 校验后挂到 `entry.fiber.runtime.Config`，`@deepseek-ai/dsh-settings` 用 `volatileForm()` 只把标了 `.volatile()` 的字段投影成表单（未标字段仍是普通配置，只能改 patch 文件）。`apply(ctx, config)` 拿到的每个字段是**活引用**，用 `config.x.get()` 读 —— 所以页面保存后下一个请求立刻生效，不需要重启。
+- **依赖必须用 `@deepseek-ai/schemastery`，不能是裸 `schemastery`**。`.volatile()` 只存在于 scoped fork，且 **3.18.3 才有**（3.18.2 及以下没有）。裸 `schemastery` 是 npm 原版 3.18.0，**没有 `.volatile()`** —— 用它不会报错，只会静默产出一个没有任何可编辑字段的 `Config`，页面上什么都不显示。这也是官方插件（如 `dsh-web-search-deepseek`）声明 `"@deepseek-ai/schemastery": "^3.18.3"` 的原因。
+- **配置表单的键是插件条目 id，不是命名空间字符串**。`describe()` 里 `ns: entry.options.id`，即 profile 层给这一行的 id（本插件是 `cordis.patch.yml` 里的 `- id: opencode-zen`）。所以客户端必须 `configForms.get("opencode-zen")`，且它必须与 `cordis.patch.yml` 的 `id` 一致。
+- **门禁用官方的 `configForms.whileServed([entryId], register)`**：该条目出现在 describe 镜像里才注册，消失就自动注销。没有宿主半边时页面不留空表单。返回值是 disposer，由调用方用 `ctx.effect` 包住 —— 这正是官方 `dsh-client-ui-settings-web-search` 的写法。
+- **保存走一次原子 `mutate`**，而不是 11 次独立 `set`：宿主在单个 revision 栅栏下应用整批操作，表单保存不会被观察到半应用状态，也不会和其他页面的并发编辑抢跑。被拒绝时（`mutate` 解析为 `false`）保留草稿并报错，**不**回滚 —— 静默回退会丢掉用户正在看的编辑。
+
 
 ## License
 

@@ -9,6 +9,7 @@ import {
 	buildGateTool,
 	buildZenHeaders,
 	clientVersionMeetsFloor,
+	Config,
 	createLlmStreamListener,
 	createZenHeaderMiddleware,
 	defaultSettings,
@@ -19,11 +20,11 @@ import {
 	MIN_CLIENT_VERSION,
 	opencodeProjectId,
 	parseClientVersion,
+	readConfig,
 	requestSessionContext,
 	rewriteGateTools,
 	shapeForUrl,
 	stableZenId,
-	SettingsSchema,
 	toolNameOf
 } from "../lib/index.js";
 
@@ -126,14 +127,14 @@ check("buildZenHeaders: extraHeaders override wins", () => {
 });
 
 // ── settings schema ────────────────────────────────────────────────────────
-check("SettingsSchema: defaults resolve", () => {
-	const resolved = SettingsSchema(defaultSettings());
+check("Config: defaults resolve through the volatile references", () => {
+	const resolved = readConfig(Config["~standard"].validate({}).value);
 	assert.equal(resolved.enabled, true);
 	assert.equal(resolved.sessionMode, "session");
 	assert.deepEqual(resolved.hosts, ["opencode.ai"]);
 });
-check("SettingsSchema: sessionMode rejects unknown values", () => {
-	assert.throws(() => SettingsSchema({ ...defaultSettings(), sessionMode: "nonsense" }));
+check("Config: sessionMode rejects unknown values", () => {
+	assert.ok(Config["~standard"].validate({ ...defaultSettings(), sessionMode: "nonsense" }).issues);
 });
 
 // ── fetch middleware ───────────────────────────────────────────────────────
