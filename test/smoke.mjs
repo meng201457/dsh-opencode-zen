@@ -282,6 +282,31 @@ await (async () => {
 			assert.match(buildGateTool(name, "chat").function.description, /not implemented/i);
 		}
 	});
+	// The "required tool names" field is user-editable precisely so an upstream
+	// rule change needs no code change, so an unknown name must produce a usable
+	// stub rather than throw. A throw here escapes the fetch middleware, which
+	// does not catch, and fails every request to the allowlisted host — a
+	// settings typo turning into a total outage.
+	check("buildGateTool synthesizes a stub for any name, in every shape", () => {
+		// `description` sits at a different depth per wire shape, mirroring the
+		// `parameters`/`input_schema` nesting each endpoint expects.
+		const descriptionOf = (tool) => tool.function?.description ?? tool.description;
+		for (const shape of ["chat", "anthropic", "responses"]) {
+			const tool = buildGateTool("skill", shape);
+			assert.equal(toolNameOf(tool), "skill", `${shape} names the tool`);
+			assert.match(descriptionOf(tool), /not implemented/i, `${shape} labels the synthesized stub`);
+			assert.match(descriptionOf(tool), /skill/, `${shape} names the required tool in the stub`);
+		}
+		assert.equal(buildGateTool("skill", "chat").function.parameters.type, "object");
+		assert.equal(buildGateTool("skill", "anthropic").input_schema.type, "object");
+		assert.equal(buildGateTool("skill", "responses").parameters.type, "object");
+	});
+	check("ensureGateTools honours a name with no hand-written stub", () => {
+		const dsh = [{ type: "function", function: { name: "pwsh" } }];
+		const { tools, injected } = ensureGateTools(dsh, "chat", ["bash", "read", "skill"]);
+		assert.deepEqual(injected, ["bash", "read", "skill"]);
+		assert.deepEqual(tools.map(toolNameOf), ["pwsh", "bash", "read", "skill"]);
+	});
 	check("ensureGateTools adds only what is missing", () => {
 		const dsh = [{ type: "function", function: { name: "pwsh" } }, { type: "function", function: { name: "read" } }];
 		const { tools, injected } = ensureGateTools(dsh, "chat");
@@ -388,6 +413,17 @@ await (async () => {
 	});
 	await acheck("injectGateTools=false leaves the body byte-identical", async () => {
 		assert.equal(offSeen.body, JSON.stringify(dshBody));
+	});
+
+	// End-to-end: a custom required-name list must reach the wire, not throw.
+	let customSeen;
+	await makeMiddleware({ ...settings, gateToolNames: ["bash", "read", "skill"] })({
+		input: "https://opencode.ai/zen/v1/chat/completions",
+		init: { headers: {}, body: JSON.stringify(dshBody) },
+		next: (input, init) => { customSeen = init; return passthrough(input, init); }
+	});
+	await acheck("the middleware survives a required name with no hand-written stub", async () => {
+		assert.deepEqual(JSON.parse(customSeen.body).tools.map(toolNameOf), ["pwsh", "bash", "read", "skill"]);
 	});
 
 	let otherSeen;

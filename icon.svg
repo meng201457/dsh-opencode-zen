@@ -1,0 +1,14 @@
+<svg width="36" height="36" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M18 5.25 21.4 12.9 29.75 13.7 23.5 19.35 25.35 27.55 18 23.3 10.65 27.55 12.5 19.35 6.25 13.7 14.6 12.9Z" fill="url(#zen-a)" />
+  <path d="M12.4 9.1h11.2M14.9 30.4h6.2" stroke="url(#zen-b)" stroke-width="2.2" stroke-linecap="round" />
+  <defs>
+    <linearGradient id="zen-a" x1="7" y1="6" x2="29" y2="28" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#67C7FE" />
+      <stop offset="1" stop-color="#3F77D8" />
+    </linearGradient>
+    <linearGradient id="zen-b" x1="12" y1="9" x2="21" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3F77D8" />
+      <stop offset="1" stop-color="#67C7FE" />
+    </linearGradient>
+  </defs>
+</svg>

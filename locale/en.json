@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode Zen identity",
+    "description": "Stamps OpenCode client-identity headers on requests to opencode.ai, and adds the tool names the Zen free tier requires. Everything is configured on this page."
+  }
+}

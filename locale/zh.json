@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "OpenCode Zen 身份头",
+    "description": "给发往 opencode.ai 的请求加上 OpenCode 客户端身份头，并补齐 Zen 免费档要求的工具名。全部配置都在本页完成。"
+  }
+}

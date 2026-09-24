@@ -4,7 +4,7 @@
 
 只作用于 `opencode.ai` 及其子域名；其他任何主机原样放行，一个字节不改。
 
-> **DSH 版本要求：`0.1.7-alpha.1` 及以上。** 0.1.7 改掉了插件配置的两侧 API
+> **DSH 版本要求：`0.1.7-alpha.1` 及以上（实测于 `0.1.7-rc.1`）。** 0.1.7 改掉了插件配置的两侧 API
 > （客户端 `settingsScope` → `configForms`，宿主 `settings.register()` → 导出
 > `.volatile()` 的 `Config`），本版本已跟进，**不能**在 0.1.6 上运行。
 
@@ -461,9 +461,10 @@ function tU(_, Y = Date.now()) {
 
 ```powershell
 node --check lib/index.js && node --check lib/client.js
-node test/smoke.mjs          # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁（42 项）
-node test/mount.mjs          # apply(ctx, config)：Config/volatile 字段、默认值、effect/on/teardown、活引用更新
-node test/client-smoke.mjs   # 浏览器端冒烟：configForms 条目 id、bundle-config 注册、served 门禁、mutate、渲染（vm 模拟 __ModuleLoader__）
+node test/smoke.mjs            # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁（45 项）
+node test/mount.mjs            # apply(ctx, config)：Config/volatile 字段、默认值、effect/on/teardown、活引用更新
+node test/client-smoke.mjs     # 浏览器端冒烟：configForms 条目 id、bundle-config 注册、served 门禁、mutate、渲染（vm 模拟 __ModuleLoader__）
+node test/loader-contract.mjs  # 导出形态：模块必须能通过 Loader 的 unwrapExports 且仍带 Config
 ```
 
 宿主端导出的纯函数（`hostMatches` / `buildZenHeaders` / `stableZenId` /
@@ -501,6 +502,9 @@ node gate37.mjs 200 15 2 # 只变一个变量，每格两侧夹对照
 - **配置表单的键是插件条目 id，不是命名空间字符串**。`describe()` 里 `ns: entry.options.id`，即 profile 层给这一行的 id（本插件是 `cordis.patch.yml` 里的 `- id: opencode-zen`）。所以客户端必须 `configForms.get("opencode-zen")`，且它必须与 `cordis.patch.yml` 的 `id` 一致。
 - **门禁用官方的 `configForms.whileServed([entryId], register)`**：该条目出现在 describe 镜像里才注册，消失就自动注销。没有宿主半边时页面不留空表单。返回值是 disposer，由调用方用 `ctx.effect` 包住 —— 这正是官方 `dsh-client-ui-settings-web-search` 的写法。
 - **保存走一次原子 `mutate`**，而不是 11 次独立 `set`：宿主在单个 revision 栅栏下应用整批操作，表单保存不会被观察到半应用状态，也不会和其他页面的并发编辑抢跑。被拒绝时（`mutate` 解析为 `false`）保留草稿并报错，**不**回滚 —— 静默回退会丢掉用户正在看的编辑。
+- **宿主半边绝对不能有 `export default`（v0.5.1 修）**。`cordis-plugin-loader` 的 `unwrapExports()` 第一句就是 `exports = exports.default ?? exports`；ESM namespace 没有 `__esModule`，于是**下一句直接 return**，默认导出把整个 namespace 顶掉。`registry.plugin()` 随后记的 `Config: plugin.Config` 就是 `undefined`，`dsh-settings.describe()` 把没有 schema 的条目**静默过滤掉** —— 插件照常工作（`apply` 仍是合法 callback），但 Plugins 页上**一个字段都不显示，且不报任何错**。官方文档写得很直白（"export one of these forms; do not mix them"），所有官方插件也都只用具名导出。这个 bug 由 `e734de3` 引入、藏了三个版本，因为 `mount.mjs` 断言的是**模块 namespace** 上的 `mod.Config`，而 Loader 读的是 unwrap 之后的对象 —— 两者在带默认导出时**不是同一个东西**。`test/loader-contract.mjs` 现在把这段 unwrap 算法照抄下来跑一遍真实模块，专门盯这个。
+- **门禁占位工具对任意工具名都要能生成（v0.5.1 修）**。"必须存在的工具名"是给用户改的（上游改规则时不用改代码），但 `buildGateTool` 原先对 `bash`/`read` 之外的任何名字直接 `throw TypeError`，而 fetch 中间件**不 catch** —— 用户在设置页把工具名改成 `skill` 这类合法名字后，**发往 opencode.ai 的每一个请求都会失败**。现在未知名字会合成一个通用占位（描述里写明"未实现、别调用"并点名该工具），把"设置写错"从"整站不可用"降级为"多一个无害占位"。
+- **卡片显示文字与图标来自 manifest，不来自代码（v0.5.1 加）**。Plugins 页在**不激活插件**的前提下读 `locale/en.json` 的 `meta.title` / `meta.description` 和 `package.json` 顶层的 `icon`；缺了就退回包名、包描述和默认图形。所以需要三处配套：`locale/*.json` 文件、`exports` 里的 `"./locale/*.json"`（否则 `ERR_PACKAGE_PATH_NOT_EXPORTED` 会让元数据整块读不到）、以及 `files` 里带上它们。图标必须是 manifest 目录内的相对路径、扩展名限 svg/png/jpg/jpeg/webp、≤256 KiB。
 
 
 ## License
