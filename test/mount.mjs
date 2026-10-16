@@ -24,7 +24,7 @@ assert.equal(resolved.issues, undefined, "Config validates an empty object");
 // no form for it and the Plugins page shows nothing to edit.
 const expectedFields = [
 	"enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession",
-	"provider", "extraHeaders", "injectGateTools", "gateToolNames", "debug"
+	"provider", "extraHeaders", "injectGateTools", "gateToolNames", "forceStream", "debug"
 ];
 for (const field of expectedFields) {
 	const ref = resolved.value[field];
@@ -42,6 +42,7 @@ assert.equal(resolved.value.fallbackSession.get(), "dsh-default");
 assert.equal(resolved.value.provider.get(), "opencode");
 assert.equal(resolved.value.injectGateTools.get(), true, "gate-tool injection defaults on");
 assert.deepEqual(JSON.parse(JSON.stringify(resolved.value.gateToolNames.get())), ["bash", "read"]);
+assert.equal(resolved.value.forceStream.get(), true, "the stream gate defaults on");
 assert.equal(resolved.value.debug.get(), false);
 
 // A profile layer overrides a field without disturbing the others.
@@ -66,6 +67,7 @@ assert.deepEqual(
 const read = mod.readConfig(resolved.value);
 assert.equal(read.enabled, true);
 assert.equal(read.provider, "opencode");
+assert.equal(read.forceStream, true);
 assert.deepEqual(read.gateToolNames, ["bash", "read"]);
 assert.deepEqual(
 	mod.readConfig(undefined),
@@ -142,6 +144,24 @@ assert.equal(first.get("x-opencode-project"), "before", "reads the project field
 live.value.project[Symbol.for("cosmokit.volatile.write")]("after");
 const second = await headersFor();
 assert.equal(second.get("x-opencode-project"), "after", "a later write is visible without remounting");
+
+// The stream gate rides the same live reference, so a settings write must change
+// the body on the wire with no restart — that is the whole reason the plugin
+// reads the references per request instead of snapshotting them at mount.
+const bodyThrough = async () => {
+	let seen = null;
+	await middleware.middleware({
+		input: "https://opencode.ai/zen/v1/chat/completions",
+		init: { headers: {}, body: JSON.stringify({ model: "m", messages: [{ role: "user", content: "hi" }] }) },
+		next: async (_input, init) => { seen = init.body; return new Response("ok"); }
+	});
+	return JSON.parse(seen);
+};
+assert.equal((await bodyThrough()).stream, true, "a one-shot body is forced to stream");
+live.value.forceStream[Symbol.for("cosmokit.volatile.write")](false);
+assert.equal((await bodyThrough()).stream, undefined, "turning the field off stops the rewrite");
+live.value.forceStream[Symbol.for("cosmokit.volatile.write")](true);
+assert.equal((await bodyThrough()).stream, true, "turning it back on resumes it");
 
 // ── teardown restores the chain ────────────────────────────────────────────
 liveState.middlewares.length = 0;

@@ -100,6 +100,7 @@ const seeded = {
 	extraHeaders: {},
 	injectGateTools: true,
 	gateToolNames: ["bash", "read"],
+	forceStream: true,
 	debug: false
 };
 let currentValue = JSON.parse(JSON.stringify(seeded));
@@ -277,6 +278,12 @@ face.editGateToolNames("has space");
 assert.equal(face.hooks.opencodeZenSettings.getSnapshot().invalid, true, "a tool name with a space is invalid");
 face.editGateToolNames("bash\nread");
 
+// the force-stream toggle round-trips through the draft
+face.editForceStream(false);
+assert.equal(face.hooks.opencodeZenSettings.getSnapshot().draft.forceStream, false);
+face.editForceStream(true);
+assert.equal(face.hooks.opencodeZenSettings.getSnapshot().draft.forceStream, true);
+
 await face.save();
 // One atomic mutation, not eleven independent writes: the Host applies the whole
 // batch under a single revision fence.
@@ -285,7 +292,7 @@ const ops = mutations[0];
 assert.equal(
 	json(ops.map((op) => op.path[0])),
 	json(["enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession", "provider", "extraHeaders",
-		"injectGateTools", "gateToolNames", "debug"])
+		"injectGateTools", "gateToolNames", "forceStream", "debug"])
 );
 assert.equal(ops.every((op) => op.op === "set"), true, "every op is a set");
 const valueOf = (field) => ops.find((op) => op.path[0] === field).value;
@@ -294,6 +301,7 @@ assert.equal(valueOf("sessionMode"), "random");
 assert.equal(json(valueOf("extraHeaders")), json({ "x-opencode-project": "global", "x-extra": "1" }));
 assert.equal(valueOf("injectGateTools"), true);
 assert.equal(json(valueOf("gateToolNames")), json(["bash", "read"]));
+assert.equal(valueOf("forceStream"), true);
 
 const afterSave = face.hooks.opencodeZenSettings.getSnapshot();
 assert.equal(afterSave.dirty, false);
@@ -335,6 +343,7 @@ const props = {
 	editHeaders: face.editHeaders,
 	editInjectGateTools: face.editInjectGateTools,
 	editGateToolNames: face.editGateToolNames,
+	editForceStream: face.editForceStream,
 	editDebug: face.editDebug,
 	save: face.save,
 	discard: face.discard
@@ -345,11 +354,13 @@ const text = JSON.stringify(tree);
 assert.ok(text.includes("intro"), "renders the explanatory lead");
 assert.ok(text.includes("note1"), "renders the notes block");
 assert.ok(text.includes("note4"), "renders the free-tier tool-gate note");
+assert.ok(text.includes("note5"), "renders the free-tier client-gate note");
 assert.ok(text.includes("opencode.ai"), "renders the host list");
 assert.ok(text.includes("opencode-go"), "renders the current provider");
 assert.ok(text.includes("save"), "renders the save action");
 assert.ok(text.includes("x-opencode-project"), "renders the extra-header textarea");
 assert.ok(text.includes("gateTools"), "renders the gate-tool toggle");
+assert.ok(text.includes("forceStream"), "renders the force-stream toggle");
 assert.ok(text.includes("bash"), "renders the required tool-name textarea");
 
 // the tool-name field stays visible but disabled while injection is off

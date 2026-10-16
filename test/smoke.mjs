@@ -17,12 +17,14 @@ import {
 	ensureGateTools,
 	GATE_TOOL_NAMES,
 	hostMatches,
+	ID_HEAD_MARKER,
 	MIN_CLIENT_VERSION,
 	opencodeProjectId,
 	parseClientVersion,
 	readConfig,
 	requestSessionContext,
-	rewriteGateTools,
+	requiresStream,
+	rewriteRequestBody,
 	shapeForUrl,
 	stableZenId,
 	toolNameOf
@@ -56,13 +58,19 @@ check("hostMatches: no false positives on lookalikes", () => {
 });
 
 // ── id derivation ──────────────────────────────────────────────────────────
-check("stableZenId: deterministic, 26 chars, 12 lowercase hex head", () => {
+check("stableZenId: deterministic, 26 chars, head marked 0xffe", () => {
 	const a = stableZenId("abc:opencode");
 	assert.equal(a, stableZenId("abc:opencode"));
-	// The relay requires exactly this shape: 12 lowercase hex + 14 base62.
-	assert.match(a, /^[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+	// 12 lowercase hex + 14 base62, with the head's low 12 bits pinned: the relay
+	// decodes them as the official client's per-millisecond counter and refuses a
+	// head whose counter a real client could not have produced (2026-10-16).
+	assert.match(a, /^[0-9a-f]{9}ffe[0-9A-Za-z]{14}$/);
 	assert.equal(a.length, 26);
+	assert.equal(ID_HEAD_MARKER, "ffe");
 	assert.notEqual(a, stableZenId("abd:opencode"));
+	// The marker is what changed: everything before it still comes from the seed,
+	// so two seeds still differ in more than the tail.
+	assert.notEqual(stableZenId("abc:opencode").slice(0, 9), stableZenId("abd:opencode").slice(0, 9));
 });
 check("opencodeProjectId: differs per provider, prefixed", () => {
 	assert.notEqual(opencodeProjectId("opencode"), opencodeProjectId("opencode-go"));
@@ -104,8 +112,8 @@ check("defaults clear the floor (a bad default would be a silent outage)", () =>
 check("buildZenHeaders: full set for a session", () => {
 	const h = buildZenHeaders(defaultSettings(), "sess-1");
 	assert.equal(h["x-opencode-client"], "cli");
-	assert.match(h["x-opencode-session"], /^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
-	assert.match(h["x-opencode-request"], /^usr_[0-9a-f]{12}[0-9A-Za-z]{14}$/);
+	assert.match(h["x-opencode-session"], /^ses_[0-9a-f]{9}ffe[0-9A-Za-z]{14}$/);
+	assert.match(h["x-opencode-request"], /^usr_[0-9a-f]{9}ffe[0-9A-Za-z]{14}$/);
 	assert.match(h["x-opencode-project"], /^proj_[0-9a-f]{8}$/);
 	assert.equal(h["user-agent"], "opencode/latest/1.18.30/cli");
 });
@@ -131,6 +139,7 @@ check("Config: defaults resolve through the volatile references", () => {
 	const resolved = readConfig(Config["~standard"].validate({}).value);
 	assert.equal(resolved.enabled, true);
 	assert.equal(resolved.sessionMode, "session");
+	assert.equal(resolved.forceStream, true);
 	assert.deepEqual(resolved.hosts, ["opencode.ai"]);
 });
 check("Config: sessionMode rejects unknown values", () => {
@@ -333,9 +342,25 @@ await (async () => {
 		stream: true,
 		tools: [{ type: "function", function: { name: "pwsh", description: "shell", parameters: { type: "object" } } }]
 	};
-	const rewritten = await rewriteGateTools(JSON.stringify(dshBody), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
-	await acheck("rewriteGateTools injects into a real DSH-shaped body", async () => {
+	/** The same body as a one-shot call: since 2026-10-16 the relay refuses these. */
+	const oneShotBody = { model: dshBody.model, messages: dshBody.messages, tools: dshBody.tools };
+
+	check("requiresStream: chat-shaped bodies that are not streaming yet", () => {
+		assert.equal(requiresStream({ messages: [], stream: false }), true);
+		assert.equal(requiresStream({ messages: [] }), true);
+		assert.equal(requiresStream({ input: [] }), true);
+		assert.equal(requiresStream({ tools: [] }), true);
+		// Already streaming, or no chat surface at all.
+		assert.equal(requiresStream({ messages: [], stream: true }), false);
+		assert.equal(requiresStream({ model: "m" }), false);
+		assert.equal(requiresStream(null), false);
+		assert.equal(requiresStream([1, 2]), false);
+	});
+
+	const rewritten = await rewriteRequestBody(JSON.stringify(dshBody), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+	await acheck("rewriteRequestBody injects into a real DSH-shaped body", async () => {
 		assert.deepEqual(rewritten.injected, ["bash", "read"]);
+		assert.equal(rewritten.streamForced, false);
 		const parsed = JSON.parse(rewritten.text);
 		assert.deepEqual(parsed.tools.map(toolNameOf), ["pwsh", "bash", "read"]);
 		// Everything else about the body must survive verbatim.
@@ -343,48 +368,79 @@ await (async () => {
 		assert.equal(parsed.stream, true);
 		assert.deepEqual(parsed.messages, dshBody.messages);
 	});
-	await acheck("rewriteGateTools is a no-op on a compliant body", async () => {
-		const ok = { ...dshBody, tools: [buildGateTool("bash", "chat"), buildGateTool("read", "chat")] };
-		const result = await rewriteGateTools(JSON.stringify(ok), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
-		assert.deepEqual(result.injected, []);
+	await acheck("rewriteRequestBody forces stream:true on a one-shot chat body", async () => {
+		const result = await rewriteRequestBody(JSON.stringify(oneShotBody), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+		assert.equal(result.streamForced, true);
+		const parsed = JSON.parse(result.text);
+		assert.equal(parsed.stream, true);
+		assert.deepEqual(parsed.tools.map(toolNameOf), ["pwsh", "bash", "read"]);
+		assert.equal(parsed.model, oneShotBody.model);
 	});
-	await acheck("rewriteGateTools skips a body with no tool surface", async () => {
+	await acheck("rewriteRequestBody honours forceStream=false", async () => {
+		const result = await rewriteRequestBody(JSON.stringify(oneShotBody), new URL("https://opencode.ai/zen/v1/chat/completions"), { ...defaultSettings(), forceStream: false });
+		assert.equal(result.streamForced, false);
+		assert.equal(JSON.parse(result.text).stream, undefined);
+	});
+	await acheck("rewriteRequestBody honours injectGateTools=false, independently of the stream gate", async () => {
+		const result = await rewriteRequestBody(JSON.stringify(oneShotBody), new URL("https://opencode.ai/zen/v1/chat/completions"), { ...defaultSettings(), injectGateTools: false });
+		assert.deepEqual(result.injected, []);
+		assert.equal(JSON.parse(result.text).tools.length, 1);
+		assert.equal(result.streamForced, true);
+	});
+	await acheck("rewriteRequestBody is byte-identical when nothing is needed", async () => {
+		const ok = { ...dshBody, tools: [buildGateTool("bash", "chat"), buildGateTool("read", "chat")] };
+		const text = JSON.stringify(ok);
+		const result = await rewriteRequestBody(text, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+		assert.deepEqual(result.injected, []);
+		assert.equal(result.streamForced, false);
+		assert.equal(result.text, text);
+	});
+	await acheck("rewriteRequestBody skips a body with no tool surface", async () => {
 		// The session-title generator sends no tools; adding any would invite tool
 		// calls in a request that must return a plain title. The body still comes
 		// back verbatim so a consumed stream can be replaced.
 		const title = { model: "mimo-v2.5-free", messages: [{ role: "user", content: "title?" }], stream: true };
-		const result = await rewriteGateTools(JSON.stringify(title), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+		const result = await rewriteRequestBody(JSON.stringify(title), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
 		assert.deepEqual(result.injected, []);
+		assert.equal(result.streamForced, false);
 		assert.equal(result.text, JSON.stringify(title));
-		const empty = await rewriteGateTools(JSON.stringify({ ...title, tools: [] }), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+		const empty = await rewriteRequestBody(JSON.stringify({ ...title, tools: [] }), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
 		assert.deepEqual(empty.injected, []);
+		// ...but a title request is a chat body too, so the stream gate still applies.
+		const oneShotTitle = { model: "mimo-v2.5-free", messages: [{ role: "user", content: "title?" }] };
+		const forced = await rewriteRequestBody(JSON.stringify(oneShotTitle), new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+		assert.equal(forced.streamForced, true);
+		assert.equal(JSON.parse(forced.text).stream, true);
 	});
-	await acheck("rewriteGateTools passes a non-JSON body through unchanged", async () => {
-		const result = await rewriteGateTools("not json", new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+	await acheck("rewriteRequestBody passes a non-JSON body through unchanged", async () => {
+		const result = await rewriteRequestBody("not json", new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
 		assert.deepEqual(result.injected, []);
+		assert.equal(result.streamForced, false);
 		assert.equal(result.text, "not json");
 		// A body it cannot read at all is left untouched and never consumed.
-		assert.equal(await rewriteGateTools(undefined, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings()), undefined);
+		assert.equal(await rewriteRequestBody(undefined, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings()), undefined);
 	});
-	await acheck("rewriteGateTools reads a Uint8Array body", async () => {
-		const bytes = new TextEncoder().encode(JSON.stringify(dshBody));
-		const result = await rewriteGateTools(bytes, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+	await acheck("rewriteRequestBody reads a Uint8Array body", async () => {
+		const bytes = new TextEncoder().encode(JSON.stringify(oneShotBody));
+		const result = await rewriteRequestBody(bytes, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
 		assert.deepEqual(result.injected, ["bash", "read"]);
+		assert.equal(result.streamForced, true);
 	});
-	await acheck("rewriteGateTools reads a stream body and returns the text", async () => {
+	await acheck("rewriteRequestBody reads a stream body and returns the text", async () => {
 		// Reading consumes the stream, so the caller MUST get text back to send.
 		const stream = new ReadableStream({
 			start(controller) {
-				controller.enqueue(new TextEncoder().encode(JSON.stringify(dshBody)));
+				controller.enqueue(new TextEncoder().encode(JSON.stringify(oneShotBody)));
 				controller.close();
 			}
 		});
-		const result = await rewriteGateTools(stream, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
+		const result = await rewriteRequestBody(stream, new URL("https://opencode.ai/zen/v1/chat/completions"), defaultSettings());
 		assert.deepEqual(result.injected, ["bash", "read"]);
 		assert.deepEqual(JSON.parse(result.text).tools.map(toolNameOf), ["pwsh", "bash", "read"]);
+		assert.equal(JSON.parse(result.text).stream, true);
 	});
-	await acheck("rewriteGateTools honours a custom required-name list", async () => {
-		const result = await rewriteGateTools(JSON.stringify(dshBody), new URL("https://opencode.ai/zen/v1/chat/completions"), {
+	await acheck("rewriteRequestBody honours a custom required-name list", async () => {
+		const result = await rewriteRequestBody(JSON.stringify(dshBody), new URL("https://opencode.ai/zen/v1/chat/completions"), {
 			...defaultSettings(),
 			gateToolNames: ["read"]
 		});
@@ -405,14 +461,49 @@ await (async () => {
 		assert.equal(new Headers(gateSeen.headers).get("x-opencode-client"), "cli");
 	});
 
+	let oneShotSeen;
+	await makeMiddleware(settings)({
+		input: "https://opencode.ai/zen/v1/chat/completions",
+		init: { headers: {}, body: JSON.stringify(oneShotBody) },
+		next: (input, init) => { oneShotSeen = init; return passthrough(input, init); }
+	});
+	await acheck("middleware forces stream:true on a one-shot body", async () => {
+		const parsed = JSON.parse(oneShotSeen.body);
+		assert.equal(parsed.stream, true);
+		assert.deepEqual(parsed.tools.map(toolNameOf), ["pwsh", "bash", "read"]);
+		assert.equal(new Headers(oneShotSeen.headers).get("content-length"), null);
+	});
+
 	let offSeen;
 	await makeMiddleware({ ...settings, injectGateTools: false })({
 		input: "https://opencode.ai/zen/v1/chat/completions",
 		init: { headers: {}, body: JSON.stringify(dshBody) },
 		next: (input, init) => { offSeen = init; return passthrough(input, init); }
 	});
-	await acheck("injectGateTools=false leaves the body byte-identical", async () => {
+	await acheck("injectGateTools=false leaves a streaming body byte-identical", async () => {
 		assert.equal(offSeen.body, JSON.stringify(dshBody));
+	});
+
+	let offOneShotSeen;
+	await makeMiddleware({ ...settings, injectGateTools: false })({
+		input: "https://opencode.ai/zen/v1/chat/completions",
+		init: { headers: {}, body: JSON.stringify(oneShotBody) },
+		next: (input, init) => { offOneShotSeen = init; return passthrough(input, init); }
+	});
+	await acheck("injectGateTools=false still enforces the stream gate", async () => {
+		const parsed = JSON.parse(offOneShotSeen.body);
+		assert.equal(parsed.stream, true);
+		assert.equal(parsed.tools.length, 1, "the tool list is untouched when injection is off");
+	});
+
+	let unforcedSeen;
+	await makeMiddleware({ ...settings, forceStream: false })({
+		input: "https://opencode.ai/zen/v1/chat/completions",
+		init: { headers: {}, body: JSON.stringify(oneShotBody) },
+		next: (input, init) => { unforcedSeen = init; return passthrough(input, init); }
+	});
+	await acheck("forceStream=false leaves the stream flag alone", async () => {
+		assert.equal(JSON.parse(unforcedSeen.body).stream, undefined);
 	});
 
 	// End-to-end: a custom required-name list must reach the wire, not throw.

@@ -1,6 +1,6 @@
 # dsh-opencode-zen
 
-给 **DeepSeek Harness (DSH)** 发往 `opencode.ai` 的请求注入 OpenCode 客户端标识头（Zen / Go 免费档与粘性路由所需），并在需要时补齐免费档要求的工具名，配置界面挂在官方 **Plugins** 页里。
+给 **DeepSeek Harness (DSH)** 发往 `opencode.ai` 的请求注入 OpenCode 客户端标识头（Zen / Go 免费档与粘性路由所需），并补齐免费档现在要求的另外两样：工具名与 `stream: true`，配置界面挂在官方 **Plugins** 页里。
 
 只作用于 `opencode.ai` 及其子域名；其他任何主机原样放行，一个字节不改。
 
@@ -20,8 +20,17 @@ OpenCode 的网关要求推理请求携带客户端标识头。缺了会直接�
 | `403 FreeTierError` | 免费档门禁：UA 里没有 `opencode/版本号` | ✅ 2026-09-19 复现并定位 |
 | `426 UpgradeRequired` | UA 里的 `opencode/版本` **低于 1.18.0** | ✅ 2026-09-19 复现并定位 |
 | `403 FreeTierError` | 免费档门禁：`tools` 里没有名为 `bash` / `read` 的工具 | ✅ 2026-09-21 复现并定位 |
+| `403 FreeTierError` | 免费档门禁：请求体不是流式（缺 `stream: true`） | ✅ 2026-10-16 复现并定位 |
+| `403 FreeTierError` | 免费档门禁：`x-opencode-session` 头部低位不是官方客户端的计数位 | ✅ 2026-10-16 复现并定位 |
+| `403 RegionError` | 该模型在出口 IP 所在地区不可用，**与插件无关** | ✅ 2026-10-16（`muse-spark-*-contributor-free`） |
 | `400` | 缺 `x-opencode-session`（Go 自 2026-09-05 起强制） | ✅ 已复现 |
 | `429 FreeUsageLimitError` | 瞬时限流 / 配额，**与头无关** | ⚠️ 见下文 |
+
+> **2026-10-16 更新（重要）**：免费档不再只看"头长得像"，而是**解码**会话 ID 要求
+> 它是官方客户端的真 id，并且要求请求体是**流式**。两条都是硬门禁，缺任一条 403
+> `FreeTierError: OpenCode's free tier can only be used from within OpenCode`。
+> 本插件 0.6.0 已自动处理。详见
+> [实测结论（2026-10-16）](#实测结论2026-10-16免费档要求请求像官方客户端)。
 
 > **2026-09-21 更新（重要）**：免费档还要求 `tools` 里**存在名为 `bash` 的工具**，
 > **且存在名为 `read` 的工具**。DSH 的 shell 工具叫 `pwsh`、**从不发 `bash`**，
@@ -146,7 +155,8 @@ dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, g
 | 额外请求头 | 空 | 每行 `名字: 值`，官方改头名时不用改代码 |
 | **补齐免费档要求的工具名** | `true` | 请求若缺 `bash` / `read`，自动补一个占位工具定义（占位工具的描述写明「不要调用」）。只在请求**已经有**工具列表时生效 |
 | **必须存在的工具名** | `bash` `read` | 每行一个。官方改规则时在这里改，不用改代码 |
-| 调试日志 | `false` | 打印每次注入的头和补的工具 |
+| **强制流式请求** | `true` | 免费档把非流式请求当成「原始 API 调用」直接 403。开启后，发往 `opencode.ai` 的对话型请求（带 `messages` / `input` / `tools` 的 JSON）若没写 `stream`，自动补 `stream: true`；已经在流式的请求一个字节都不动 |
+| 调试日志 | `false` | 打印每次注入的头、补的工具和补的 `stream` |
 
 保存即生效，**不用重启**。
 
@@ -163,8 +173,10 @@ dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, g
 会话 ID 必须稳定：Zen 按 `x-opencode-session` 的**尾部哈希**路由到上游，每请求随机会让每轮落到不同（常常不可用的）上游，命中率骤降。
 
 **形状同样是硬门禁**：`x-opencode-session` / `x-opencode-request` 的 id 体必须匹配
-`^[0-9a-f]{12}[0-9A-Za-z]{14}$` —— 前 12 位小写十六进制（官方客户端在这里编码
-`Date.now()`），总长 26。违反任一条都会被 403 挡下，见下文。
+`^[0-9a-f]{9}ffe[0-9A-Za-z]{14}$` —— 前 12 位小写十六进制（官方客户端在这里编码
+`Date.now() * 4096 + 计数器`），总长 26。**后三位固定 `ffe`**：那三位是计数器的补码，
+官方客户端的第一个 id 就是 `ffe`，而免费档现在会解码并拒绝一个真客户端不可能产生的
+计数（2026-10-16 新增）。违反任一条都会被 403 挡下，见下文。
 
 **`user-agent` 同样过门禁**：不含 `opencode/版本号` 会被 403，版本低于 `1.18.0`
 会被 `426 UpgradeRequired`。设置界面会直接判非法，宿主启动时也会打 warn。
@@ -197,6 +209,93 @@ dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, g
 三种 wire format 都覆盖：`openai-completions` 用 `{type,function:{...}}`、
 `openai-responses` 用 `{type,name,parameters}`、`anthropic-messages` 用
 `{name,input_schema}` —— 按请求体里已有的工具形状判断，形状判不出来时按 URL 路径兜底。
+
+---
+
+## 实测结论（2026-10-16，免费档要求请求"像官方客户端"）
+
+这一轮不是再加一道形状检查，而是**开始解码**：免费档会解析会话 ID、并要求请求体是
+流式的。报错重新回到那句笼统的：
+
+```json
+{"type":"error","error":{"type":"FreeTierError",
+ "message":"OpenCode's free tier can only be used from within OpenCode. Download it at https://opencode.ai and keep building."}}
+```
+
+**规则（在 `https://opencode.ai/zen/v1/chat/completions` 上实测）：**
+
+1. `x-opencode-session` 必须是官方 `Identifier` 的 **descending** 形态，头部的低 12 位
+   （12 位十六进制里的后 3 位）必须是 `ffe`。
+2. 请求体必须 `stream: true`。
+
+**方法**：本机装着官方 CLI（`opencode-ai@1.18.23`），把它指到本地中继（`.zen-probe/relay2.mjs`）
+抓下**真实请求原文**，再由中继原样转发到真 relay —— 官方 CLI 拿到 200。之后所有用例
+**两侧都夹这个官方请求作对照**（约 60 次请求，对照组 100% 200），一次只变一个变量。
+
+| 请求 | 结果 |
+|---|---|
+| 官方 CLI 头 + 官方 CLI 体（对照） | ✅ 200 |
+| 插件头 + 插件体 | ❌ 403 |
+| 插件头 + 官方 CLI 体 | ❌ 403 |
+| 官方 CLI 头 + 插件体 | ❌ 403 |
+| 官方 CLI 体 + 插件的 `user-agent` / `x-opencode-project` / `x-opencode-request` | ✅ 200 |
+| 官方 CLI 体，只把 `x-opencode-session` 换成插件的 | ❌ 403 |
+| 官方 CLI 头 + 插件体 **加 `stream: true`** | ✅ 200 |
+| 插件的头 + 插件的体 + 标记头 + `stream: true` | ✅ 200 |
+
+**所以判据只有这两条**：会话 ID 的头部低位、以及 `stream`。`user-agent`、
+`x-opencode-project`、`x-opencode-request` 的**值**都不校验（沿用插件的值一样 200）。
+
+### 头部到底校验什么
+
+官方 id 生成器（从 `opencode.exe` 里提取，两处实现一致）：
+
+```js
+const n = BigInt(Date.now()) * 4096n + BigInt(++counterPerMs);
+if (descending) n = ~n;              // session 用 descending，message/request 用 ascending
+head = hex48(n);                     // 12 位十六进制；解码：timestamp = BigInt("0x"+head) / 4096n
+tail = 14 位随机 base62
+```
+
+低 12 位因此是**计数器的补码**（`0xfff - counter`）。扫描：
+
+| 头部 | 结果 |
+|---|---|
+| 官方算法现算（含 −1h / −1d） | ✅ |
+| **随机 36 位时间 + 低 12 位 `ffe`** | ✅ |
+| counter 0（`fff`）/ 1（`ffe`）/ 2（`ffd`） | ✅ |
+| counter 4095（低 12 位 `000`） | ❌ |
+| ascending 形态（不取反） | ❌ |
+| 14 位尾巴换成随机 | ✅（尾巴不校验） |
+
+结论：**时间部分任意，低 12 位必须落在真客户端会产生的计数范围**。插件现在仍按会话
+稳定地派生前 9 位，只把后 3 位钉成 `ffe`（0.6.0）。
+
+### 怎么修、怎么验
+
+插件 0.6.0 的两处改动都在 fetch 中间件里，配置项可关：
+
+- `stableZenId()`：头部前 9 位仍由种子派生，后 3 位固定 `ffe`。
+- `forceStream`（默认开）：发往 `opencode.ai` 的对话型 JSON body 若没有 `stream`，补
+  `stream: true`；已经在流式的 body 逐字节不动。
+
+**端到端验证**（`.zen-probe/verify-fix.mjs`，真实中间件 + 真实网络，两侧夹对照）：
+
+```
+CONTROL (official CLI shape)      -> 200
+PLUGIN mimo-v2.6-flash-free
+   sent session   = ses_9d3c98e39ffen2JYl0HWr6iTEz
+   forced stream  = true   tools=pwsh,bash,read
+   -> 200
+```
+
+### 顺带确认的两件事（不是插件的问题）
+
+- **`muse-spark-1.2/1.3-contributor-free` 在本机出口 IP 所在地区不可用**：`403 RegionError`
+  "This model is not available in your country"。用官方 CLI 的原始头/体、只换模型名同样
+  403，所以是地区限制，不是门禁。`cordis.patch.yml` 里的 `opencode2` 就是它 —— 换一个
+  免费模型（如 `nemotron-3.5-lightning-free`、`deepseek-v4.1-flash-free`、`glm-5.3-flash-free`）即可。
+- **`mimo-v2.5-free` 已被上游废弃**（官方 CLI 明确回 "deprecated, use mimo-v2.6-flash-free"）。
 
 ---
 
@@ -446,22 +545,24 @@ function tU(_, Y = Date.now()) {
 - 本机实测中 `big-pickle`、`deepseek-v4-flash-free` 返回 `401`（后者不在官方免费模型列表里，属正常；前者原因未查）。
 - 免费额度按 IP + 客户端指纹共享，充值不解锁免费模型。
 - **`429` 与门禁无关**：即使所有头都正确，配额/负载也会 429。排障时**必须先排除限流**，否则会把 429 误读成"这个形状被拒"。
+- **会话 ID 的时间部分是否会被校验，未知。** 2026-10-16 实测任意 36 位都能过（时间部分是种子派生的随机值），但上游若加上"时间必须接近当前"这条，`stableZenId` 就得改成在会话首次使用时取一次 `Date.now()` 并记忆。
+- **DSH 实际发出的 body 里是否已带 `stream`，未抓包验证。** `forceStream` 无条件补，正是为了不依赖这个假设；如果你的部署里有"故意非流式"的调用，把它关掉。
 
 ## 风险
 
 伪装客户端头属灰色手段，官方随时可能收紧策略，社区有报告称会标记非官方客户端流量。介意请用小号 Key 或付费模型。
 
-> **本插件已被收紧过四次**（9-05 强制 session 头 → 9-17 校验 id 形状 → 9-19 校验客户端版本
-> → 9-21 校验工具名）。
-> 上游随时可能再加一道门。真到那天，先看 [开发与测试](#开发与测试) 里的复现脚本，
-> 用 `gate*.mjs` 的对照法定位新门禁，再改 `lib/index.js`。工具名这道门已经做成了
-> 设置项，改名字不用改代码。
+> **本插件已被收紧过五次**（9-05 强制 session 头 → 9-17 校验 id 形状 → 9-19 校验客户端版本
+> → 9-21 校验工具名 → 10-16 解码 id 低位 + 要求流式）。
+> 上游随时可能再加一道门。真到那天，先看 [开发与测试](#开发与测试) 里的复现方法与
+> `.zen-probe/` 下的脚本，用对照法定位新门禁，再改 `lib/index.js`。工具名、域名、
+> `stream` 开关都已经做成了设置项，改值不用改代码。
 
 ## 开发与测试
 
 ```powershell
 node --check lib/index.js && node --check lib/client.js
-node test/smoke.mjs            # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁（45 项）
+node test/smoke.mjs            # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁 + 客户端门禁（52 项）
 node test/mount.mjs            # apply(ctx, config)：Config/volatile 字段、默认值、effect/on/teardown、活引用更新
 node test/client-smoke.mjs     # 浏览器端冒烟：configForms 条目 id、bundle-config 注册、served 门禁、mutate、渲染（vm 模拟 __ModuleLoader__）
 node test/loader-contract.mjs  # 导出形态：模块必须能通过 Loader 的 unwrapExports 且仍带 Config
@@ -470,28 +571,37 @@ node test/loader-contract.mjs  # 导出形态：模块必须能通过 Loader 的
 宿主端导出的纯函数（`hostMatches` / `buildZenHeaders` / `stableZenId` /
 `parseClientVersion` / `clientVersionMeetsFloor` / `createZenHeaderMiddleware` /
 `createLlmStreamListener` / `detectToolShape` / `ensureGateTools` /
-`rewriteGateTools`）便于单独测试，无需 DSH 启动。
+`rewriteRequestBody` / `requiresStream`）便于单独测试，无需 DSH 启动。
 
 ### 上游再改策略时怎么查
 
-`../.repro/zen-test/` 下是这套结论的复现脚本。**方法比脚本本身重要**：
+`../.zen-probe/` 下是 2026-10-16 这轮的复现脚本。**方法比脚本本身重要**：
 
 ```powershell
-node gate39.mjs 300 25   # 端到端：对照 + 宿主单独 + 插件开启
-node gate37.mjs 200 15 2 # 只变一个变量，每格两侧夹对照
+node relay2.mjs            # 本地抓包中继：把官方 CLI 的请求原文落盘再原样转发
+node verify-fix.mjs 15000  # 端到端：真实中间件改写 → 真 relay，两侧夹官方对照
+node alt2.mjs 12000        # 定向对照：一次只变一个变量，每格两侧夹对照
 ```
 
-1. **每轮先等 ≥120s 冷却**（`gate39` 建议 300s），请求间隔 ≥15–20s。
-2. **每个用例两侧都夹一个对照**（抓包里的真实 CLI 头 + 抓包的真实 body）。
-   对照不健康 → 该轮作废重跑，**不要**据此下结论。
-3. **一次只变一个变量**，且顺序轮换（第二轮倒序），防止"靠前的请求通过"伪装成结论。
-4. 对照组就是 `captured/req-2.headers.json` + `captured/req-2.json`——真实
-   `opencode` CLI（1.18.23）经本地 relay 抓下来的原始请求。relay 用 `node relay.mjs`，
-   再把 CLI 的 `baseURL` 指到 `http://127.0.0.1:4599/zen/v1`。
+1. **先拿到官方客户端的真实请求**，别照着文档猜。装官方 CLI（`npm i -g opencode-ai`），
+   用 `XDG_DATA_HOME`/`XDG_CONFIG_HOME` 指到临时目录并复制 `auth.json`，在
+   `config/opencode/opencode.json` 里把 `provider.opencode.options.baseURL` 指向
+   `http://127.0.0.1:4599/zen/v1`，然后 `opencode run -m opencode/<免费模型> hi`。
+   中继会把头、体原文连上游状态一起记进 `capture.jsonl`。**注意 CLI 的模型列表来自
+   models.dev 快照**，太新的模型它不认（会报 `ProviderModelNotFoundError`）。
+2. **每个用例两侧都夹这个官方请求作对照**。对照不健康 → 该轮作废重跑，**不要**据此下结论。
+3. **一次只变一个变量**。2026-10-16 这轮的教训是：`头全换` 和 `体全换` 各自都 403，
+   而两个一起换是 200 —— 那不是"必须同时满足"，而是**两道独立的门，各自被踩中一道**。
+   只有把落在同一侧的单变量用例补齐，才看得出这一点。
+4. **200 的响应体是 SSE 长流**：只判状态码的话，拿到响应就把 `res.body.cancel()` 掉，
+   探测才跑得动（60 次请求的矩阵靠这个才做得完）。
+5. **`x-opencode-session` 是自造 id 时最容易被卡的地方**：它是唯一被"解码"而不是"看形状"
+   的字段，所以单变量对照要专门为它留一格。
 
 > 踩过的坑：`gate26` 全 403 是限流不是结论；`gate17` 因为每个形状复用同一个随机值，
 > 得出了错误的"字符集"结论，`gate18` 才推翻它；`gate38` 的"对照"误传了
-> `enabled:false`，导致两组完全等价。**对照写错比不做对照更危险。**
+> `enabled:false`，导致两组完全等价；**而 10-16 这轮一开始差点把"两道门"读成
+> "必须同时像官方才放行"**。**对照写错比不做对照更危险。**
 
 ## 设计说明
 
@@ -505,6 +615,8 @@ node gate37.mjs 200 15 2 # 只变一个变量，每格两侧夹对照
 - **宿主半边绝对不能有 `export default`（v0.5.1 修）**。`cordis-plugin-loader` 的 `unwrapExports()` 第一句就是 `exports = exports.default ?? exports`；ESM namespace 没有 `__esModule`，于是**下一句直接 return**，默认导出把整个 namespace 顶掉。`registry.plugin()` 随后记的 `Config: plugin.Config` 就是 `undefined`，`dsh-settings.describe()` 把没有 schema 的条目**静默过滤掉** —— 插件照常工作（`apply` 仍是合法 callback），但 Plugins 页上**一个字段都不显示，且不报任何错**。官方文档写得很直白（"export one of these forms; do not mix them"），所有官方插件也都只用具名导出。这个 bug 由 `e734de3` 引入、藏了三个版本，因为 `mount.mjs` 断言的是**模块 namespace** 上的 `mod.Config`，而 Loader 读的是 unwrap 之后的对象 —— 两者在带默认导出时**不是同一个东西**。`test/loader-contract.mjs` 现在把这段 unwrap 算法照抄下来跑一遍真实模块，专门盯这个。
 - **门禁占位工具对任意工具名都要能生成（v0.5.1 修）**。"必须存在的工具名"是给用户改的（上游改规则时不用改代码），但 `buildGateTool` 原先对 `bash`/`read` 之外的任何名字直接 `throw TypeError`，而 fetch 中间件**不 catch** —— 用户在设置页把工具名改成 `skill` 这类合法名字后，**发往 opencode.ai 的每一个请求都会失败**。现在未知名字会合成一个通用占位（描述里写明"未实现、别调用"并点名该工具），把"设置写错"从"整站不可用"降级为"多一个无害占位"。
 - **卡片显示文字与图标来自 manifest，不来自代码（v0.5.1 加）**。Plugins 页在**不激活插件**的前提下读 `locale/en.json` 的 `meta.title` / `meta.description` 和 `package.json` 顶层的 `icon`；缺了就退回包名、包描述和默认图形。所以需要三处配套：`locale/*.json` 文件、`exports` 里的 `"./locale/*.json"`（否则 `ERR_PACKAGE_PATH_NOT_EXPORTED` 会让元数据整块读不到）、以及 `files` 里带上它们。图标必须是 manifest 目录内的相对路径、扩展名限 svg/png/jpg/jpeg/webp、≤256 KiB。
+- **会话 ID 的后三位是钉死的常量，不是派生的（v0.6.0 改）**。免费档现在会解码头部：它取 12 位十六进制里的**低 12 位**当作官方客户端的"每毫秒计数器"补码，真客户端只可能产生很小的计数（实测 `fff`/`ffe`/`ffd` 通过，`000` 拒绝）。原先 FNV 派生的头部低位是均匀随机的，形状对、计数不对，照样 403。前 9 位仍由种子派生，会话稳定性（Zen 按尾部哈希做粘性路由）完全不受影响。
+- **`stream: true` 是免费档的第三个硬门禁（v0.6.0 加）**。官方客户端永远发流式请求，非流式在它眼里就是"原始 API 调用"。中间件因此把 body 改写做成一件事的两个子步骤（补工具名 + 补 `stream`），共用一次 `readBodyText` —— 流式 body 只能读一次，分成两次改写会把 body 读空。已经在流式的 body 逐字节返回原文，不做无谓重序列化。
 
 
 ## License
