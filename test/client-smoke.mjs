@@ -352,10 +352,6 @@ const props = {
 const tree = component(props);
 assert.equal(tree.type, "div", "the form renders a div (the page supplies the title)");
 const text = JSON.stringify(tree);
-assert.ok(text.includes("intro"), "renders the explanatory lead");
-assert.ok(text.includes("note1"), "renders the notes block");
-assert.ok(text.includes("note4"), "renders the free-tier tool-gate note");
-assert.ok(text.includes("note5"), "renders the free-tier client-gate note");
 assert.ok(text.includes("opencode.ai"), "renders the host list");
 assert.ok(text.includes("opencode-go"), "renders the current provider");
 assert.ok(text.includes("save"), "renders the save action");
@@ -390,37 +386,38 @@ assert.equal(textareas(offTree).length, 3, "the tool-name field stays visible wh
 face.editInjectGateTools(true);
 face.discard();
 
-// ── layout: grouped fields, notes collapsed ──
-// The form went from one flat list to five named groups, and the five gate
-// notes moved into a closed <details>. Both are pinned here because they are
-// the whole point of the layout pass.
+// ── layout: grouped fields, no explanatory copy ──
+// The form is five named groups of labels and controls. Every hint, the lead
+// paragraph and the collapsible notes block are gone, and that is pinned here:
+// they are the shape of the form, and re-adding prose is a decision, not a
+// refactor.
 const titles = [];
-const collect = (node) => {
+const classes = new Set();
+const types = new Set();
+const walk = (node) => {
 	if (node === null || typeof node !== "object") return;
-	if (Array.isArray(node)) { node.forEach(collect); return; }
+	if (Array.isArray(node)) { node.forEach(walk); return; }
+	if (typeof node.type === "string") types.add(node.type);
 	if (node.props?.className === "dshoz-groupTitle") titles.push(Array.isArray(node.children) ? node.children[0] : node.children);
-	collect(node.children);
+	for (const name of String(node.props?.className ?? "").split(" ")) if (name !== "") classes.add(name);
+	walk(node.children);
 };
-collect(tree0);
+walk(tree0);
 assert.deepEqual(
 	titles,
 	["groupBasics", "groupIdentity", "groupNetwork", "groupFreeTier", "groupAdvanced"],
 	"the fields are grouped into five named sections, in reading order"
 );
-const details = (() => {
-	const stack = [tree0];
-	const found = [];
-	while (stack.length > 0) {
-		const node = stack.pop();
-		if (node === null || typeof node !== "object") continue;
-		if (Array.isArray(node)) { stack.push(...node); continue; }
-		if (node.type === "details") found.push(node);
-		if (node.children) stack.push(node.children);
-	}
-	return found;
-})();
-assert.equal(details.length, 1, "the notes render as a single collapsible block");
-assert.ok(!details[0].props?.open, "the notes start collapsed");
+for (const gone of ["dshoz-desc", "dshoz-notes", "dshoz-notesBody", "dshoz-step", "dshoz-hint", "dshoz-groupHint"]) {
+	assert.equal(classes.has(gone), false, `no ${gone} element is rendered`);
+}
+assert.equal(types.has("details"), false, "no collapsible notes block");
+assert.equal(classes.has("dshoz-check"), true, "switches still render as compact rows");
+assert.equal(
+	JSON.stringify(tree0).includes("'intro'") || JSON.stringify(tree0).includes('"intro"'),
+	false,
+	"no lead paragraph"
+);
 const checkboxRows = (() => {
 	const stack = [tree0];
 	let count = 0;
