@@ -340,6 +340,7 @@ const props = {
 	editProvider: face.editProvider,
 	editFallbackSession: face.editFallbackSession,
 	editHosts: face.editHosts,
+	editProxyUrl: face.editProxyUrl,
 	editHeaders: face.editHeaders,
 	editInjectGateTools: face.editInjectGateTools,
 	editGateToolNames: face.editGateToolNames,
@@ -363,8 +364,8 @@ assert.ok(text.includes("gateTools"), "renders the gate-tool toggle");
 assert.ok(text.includes("forceStream"), "renders the force-stream toggle");
 assert.ok(text.includes("bash"), "renders the required tool-name textarea");
 
-// the tool-name field stays visible but disabled while injection is off
-// (the stub createElement keeps children on `node.children`, not props)
+// The tool-name field stays visible but disabled while injection is off
+// (the stub createElement keeps children on `node.children`, not props).
 const textareas = (node, found = []) => {
 	if (node === null || typeof node !== "object") return found;
 	if (Array.isArray(node)) { for (const child of node) textareas(child, found); return found; }
@@ -372,18 +373,67 @@ const textareas = (node, found = []) => {
 	textareas(node.children, found);
 	return found;
 };
-const onAreas = textareas(tree);
-assert.equal(onAreas.length, 3, "renders hosts, extra-headers and tool-name textareas");
-assert.equal(onAreas[2].props.value, "bash\nread", "the tool-name textarea shows the required names");
-assert.equal(onAreas[2].props.disabled, false);
+// Look fields up by placeholder, not by index: the layout groups them, so
+// document order is a presentation choice and must not be pinned by the test.
+const areaFor = (root, placeholderKey) => textareas(root).find((node) => node.props?.placeholder === placeholderKey);
+const tree0 = component(props);
+assert.equal(textareas(tree0).length, 3, "renders hosts, tool-name and extra-header textareas");
+const gateArea = areaFor(tree0, "gateToolNamesPlaceholder");
+assert.equal(gateArea.props.value, "bash\nread", "the tool-name textarea shows the required names");
+assert.equal(gateArea.props.disabled, false);
 
 face.editInjectGateTools(false);
 const offTree = component({ ...props, useOpencodeZenSettings: (sel) => sel(face.hooks.opencodeZenSettings.getSnapshot()) });
-const offAreas = textareas(offTree);
-assert.equal(offAreas.length, 3, "the tool-name field stays visible when injection is off");
-assert.equal(offAreas[2].props.disabled, true, "the tool-name field is disabled when injection is off");
+const offArea = areaFor(offTree, "gateToolNamesPlaceholder");
+assert.equal(offArea.props.disabled, true, "the tool-name field is disabled when injection is off");
+assert.equal(textareas(offTree).length, 3, "the tool-name field stays visible when injection is off");
 face.editInjectGateTools(true);
 face.discard();
+
+// ── layout: grouped fields, notes collapsed ──
+// The form went from one flat list to five named groups, and the five gate
+// notes moved into a closed <details>. Both are pinned here because they are
+// the whole point of the layout pass.
+const titles = [];
+const collect = (node) => {
+	if (node === null || typeof node !== "object") return;
+	if (Array.isArray(node)) { node.forEach(collect); return; }
+	if (node.props?.className === "dshoz-groupTitle") titles.push(Array.isArray(node.children) ? node.children[0] : node.children);
+	collect(node.children);
+};
+collect(tree0);
+assert.deepEqual(
+	titles,
+	["groupBasics", "groupIdentity", "groupNetwork", "groupFreeTier", "groupAdvanced"],
+	"the fields are grouped into five named sections, in reading order"
+);
+const details = (() => {
+	const stack = [tree0];
+	const found = [];
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (node === null || typeof node !== "object") continue;
+		if (Array.isArray(node)) { stack.push(...node); continue; }
+		if (node.type === "details") found.push(node);
+		if (node.children) stack.push(node.children);
+	}
+	return found;
+})();
+assert.equal(details.length, 1, "the notes render as a single collapsible block");
+assert.ok(!details[0].props?.open, "the notes start collapsed");
+const checkboxRows = (() => {
+	const stack = [tree0];
+	let count = 0;
+	while (stack.length > 0) {
+		const node = stack.pop();
+		if (node === null || typeof node !== "object") continue;
+		if (Array.isArray(node)) { stack.push(...node); continue; }
+		if (node.props?.className === "dshoz-field dshoz-check") count += 1;
+		if (node.children) stack.push(node.children);
+	}
+	return count;
+})();
+assert.equal(checkboxRows, 4, "the four switches keep the compact checkbox row");
 
 console.log("dsh-opencode-zen client smoke: all check groups passed");
 console.log("  parsers, validation, configForms entry id, bundle-config registration, served gate, mutate, discard, render — OK");

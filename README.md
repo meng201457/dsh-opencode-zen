@@ -144,6 +144,10 @@ dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, g
 
 > 早期版本把配置放在**设置 → OpenCode Zen** 这个独立一栏。现在改为注册进官方 Plugins 页，
 > 不再占用独立的设置栏。
+>
+> 表单按 **基础 / 身份与会话 / 出网范围 / 免费档兼容 / 高级与排障** 五组排列，顶部五条实测说明
+> 折叠起来（点开才展开）。开关是「方框 + 可点标签 + 独占一行的说明」——标签与控件用 `for`/`id`
+> 关联，点文字就能切换/聚焦。
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -605,6 +609,10 @@ node test/mount.mjs            # apply(ctx, config)：Config/volatile 字段、�
 node test/client-smoke.mjs     # 浏览器端冒烟：configForms 条目 id、bundle-config 注册、served 门禁、mutate、渲染（vm 模拟 __ModuleLoader__）
 node test/loader-contract.mjs  # 导出形态：模块必须能通过 Loader 的 unwrapExports 且仍带 Config
 ```
+
+改表单布局时不用启动 DSH：`.probe/preview.mjs` 把**真实组件 + 真实样式**渲成静态页
+（`node .probe/preview.mjs "lang=zh"`，加 `state=errors` 可看「未保存 + 非法」的页脚极端态），
+再用浏览器截图核对间距与换行。2026-10-18 那次改版就是靠它发现开关行被压成一字一行的。
 
 宿主端导出的纯函数（`hostMatches` / `buildZenHeaders` / `stableZenId` /
 `parseClientVersion` / `clientVersionMeetsFloor` / `createZenHeaderMiddleware` /
