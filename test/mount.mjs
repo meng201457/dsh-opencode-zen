@@ -23,7 +23,7 @@ assert.equal(resolved.issues, undefined, "Config validates an empty object");
 // Every editable field must be volatile, or @deepseek-ai/dsh-settings projects
 // no form for it and the Plugins page shows nothing to edit.
 const expectedFields = [
-	"enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession",
+	"enabled", "userAgent", "project", "sessionMode", "hosts", "proxyUrl", "fallbackSession",
 	"provider", "extraHeaders", "injectGateTools", "gateToolNames", "forceStream", "debug"
 ];
 for (const field of expectedFields) {

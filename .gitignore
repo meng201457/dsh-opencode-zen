@@ -1,3 +1,6 @@
 node_modules/
 *.log
 .DS_Store
+# Local probe scratch: captured request bodies, session-log dumps, live scripts
+# with machine-specific paths. Reproduce from the README instead of committing.
+.probe/

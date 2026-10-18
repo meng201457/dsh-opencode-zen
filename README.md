@@ -24,6 +24,8 @@ OpenCode 的网关要求推理请求携带客户端标识头。缺了会直接�
 | `403 FreeTierError` | 免费档门禁：`x-opencode-session` 头部低位不是官方客户端的计数位 | ✅ 2026-10-16 复现并定位 |
 | `403 RegionError` | 该模型在出口 IP 所在地区不可用，**与插件无关** | ✅ 2026-10-16（`muse-spark-*-contributor-free`） |
 | `400` | 缺 `x-opencode-session`（Go 自 2026-09-05 起强制） | ✅ 已复现 |
+| `401` `authentication_error` / `api_key_expired` | **Key 本身过期**，与插件无关；原文写明「重新登录不会续期」 | ✅ 2026-10-18 复现 |
+| `429 FreeUsageLimitError` + `retry-after` ≈ 22h | 免费档按日额度耗尽，到 UTC 00:00 重置；**换 key、换出口 IP 都没用** | ✅ 2026-10-18 实测 |
 | `429 FreeUsageLimitError` | 瞬时限流 / 配额，**与头无关** | ⚠️ 见下文 |
 
 > **2026-10-16 更新（重要）**：免费档不再只看"头长得像"，而是**解码**会话 ID 要求
@@ -152,6 +154,7 @@ dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, g
 | 项目标识 | 空 | 留空 = 按路由名生成 `proj_xxxxxxxx` |
 | 兜底会话 ID | `dsh-default` | 模型探测等无会话上下文的请求用它 |
 | 生效域名 | `opencode.ai` | 匹配该域名及子域名 |
+| **代理地址** | 空 | 命中生效域名的请求改从该 **HTTP** 代理出网，例如 `http://192.168.1.199:7890`（Clash/Mihomo 混合端口直接可用）。留空 = 直连；只支持 `http://`，`socks5://` 会被判非法；代理不通时**自动退回直连**并打 warn |
 | 额外请求头 | 空 | 每行 `名字: 值`，官方改头名时不用改代码 |
 | **补齐免费档要求的工具名** | `true` | 请求若缺 `bash` / `read`，自动补一个占位工具定义（占位工具的描述写明「不要调用」）。只在请求**已经有**工具列表时生效 |
 | **必须存在的工具名** | `bash` `read` | 每行一个。官方改规则时在这里改，不用改代码 |
@@ -209,6 +212,40 @@ dsh-opencode-zen: identity headers installed (hosts=opencode.ai, enabled=true, g
 三种 wire format 都覆盖：`openai-completions` 用 `{type,function:{...}}`、
 `openai-responses` 用 `{type,name,parameters}`、`anthropic-messages` 用
 `{name,input_schema}` —— 按请求体里已有的工具形状判断，形状判不出来时按 URL 路径兜底。
+
+---
+
+## 代理（0.7.0）
+
+**目的**：给命中生效域名的请求一个可选的出口代理，用来绕开与出口地址相关的问题（地区不可用、将来若按 IP 计额）。
+
+**为什么做在 fetch 层**：`globalThis.fetch` 没有标准的 per-request 代理开关（undici 的 `dispatcher` 不是标准选项），DSH 又把 `init` 原样透传，所以只能在这一层实现——它拿到的已经是可以直接出网的最终请求。
+
+**实现**：HTTPS 走 HTTP `CONNECT` 隧道（Clash/Mihomo 混合端口 7890 就是这套），隧道里再自己握 TLS、自己发 HTTP/1.1。**没有新增依赖**：`socks5://` 需要 socks 客户端，因此在解析阶段就判为非法，而不是请求时才失败。
+
+**行为边界**（都在 `test/proxy.mjs` 里有断言）：
+
+- 只有命中**生效域名**的请求走代理，其他主机一个字节不动；
+- 代理地址写错 / 隧道建不起来 → **退回直连**并打 warn（设置项写错不该让整站不可用，这是本文件对工具名那条同样的取舍）；
+- 请求体**在隧道建立之后**才读取，所以代理失败时 `init.body` 仍然完整，退回直连不会发出空 body；
+- 同域重定向最多跟 5 跳（303 会把 POST 降成无 body 的 GET）；**跨域重定向不跟**——跟了就把身份头和 `authorization` 送给别人；
+- 响应里的 `content-encoding`（gzip/deflate/br/zstd）在这里自己解，否则绕过 undici 之后 `res.json()` 会拿到压缩字节。
+
+**实测（2026-10-18，`http://192.168.1.199:7890`）**：
+
+```
+proxied egress = 104.28.163.26          ← 出口确实换了
+zen 经中间件    -> 429   next() calls = 0
+direct  429 retry-after=78791  deadline=2026-10-18T23:59:59Z
+proxied 429 retry-after=78785  deadline=2026-10-18T23:59:59Z   ← 同一个 deadline
+public(匿名) 经代理 -> 429  同一 deadline
+```
+
+所以**这一条不要误读**：代理链路确实通了（TLS、换 IP、中间件完全接管请求），但**当天的免费额度并没有因为换出口而恢复**——直连与代理、你自己的 key 与 `Bearer public`，拿到的都是同一个「到 UTC 00:00」的窗口。也就是说 10-18 这个 429**不是**按出口 IP 计的，换 IP 不解决问题。
+
+按现有证据，代理真正有用的场景是 `403 RegionError`（该模型在出口地区不可用）这类**按出口地址判定**的拒绝，以及官方日后若真把免费额度改成按 IP 计。**它不能用来重置已耗尽的每日额度。**
+
+> **还有一格没测到**：真正的 200 流式响应。当天额度已耗尽，Zen 只肯回 429，所以 TLS-over-CONNECT 的流式只在 `test/proxy.mjs` 里用本地源站验过（SSE 分块会在 origin 还在写的时候就到达 `res.body`）。等额度恢复后，`node .probe/proxy-live.mjs` 应能从 429 变成 200 + SSE，那才算这一格补齐。
 
 ---
 
@@ -563,6 +600,7 @@ function tU(_, Y = Date.now()) {
 ```powershell
 node --check lib/index.js && node --check lib/client.js
 node test/smoke.mjs            # 纯函数 + fetch 中间件 + llm/stream 监听 + 工具门禁 + 客户端门禁（52 项）
+node test/proxy.mjs            # 真实 CONNECT 隧道：本地代理 + 本地源站，覆盖转发、gzip、SSE、重定向、退回直连（16 项）
 node test/mount.mjs            # apply(ctx, config)：Config/volatile 字段、默认值、effect/on/teardown、活引用更新
 node test/client-smoke.mjs     # 浏览器端冒烟：configForms 条目 id、bundle-config 注册、served 门禁、mutate、渲染（vm 模拟 __ModuleLoader__）
 node test/loader-contract.mjs  # 导出形态：模块必须能通过 Loader 的 unwrapExports 且仍带 Config

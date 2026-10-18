@@ -1,6 +1,6 @@
 {
   "name": "dsh-opencode-zen",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -21,7 +21,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/smoke.mjs && node test/client-smoke.mjs && node test/mount.mjs && node test/loader-contract.mjs"
+    "test": "node test/smoke.mjs && node test/proxy.mjs && node test/client-smoke.mjs && node test/mount.mjs && node test/loader-contract.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.3"

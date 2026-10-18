@@ -291,7 +291,7 @@ assert.equal(mutations.length, 1, "save issues exactly one mutate call");
 const ops = mutations[0];
 assert.equal(
 	json(ops.map((op) => op.path[0])),
-	json(["enabled", "userAgent", "project", "sessionMode", "hosts", "fallbackSession", "provider", "extraHeaders",
+	json(["enabled", "userAgent", "project", "sessionMode", "hosts", "proxyUrl", "fallbackSession", "provider", "extraHeaders",
 		"injectGateTools", "gateToolNames", "forceStream", "debug"])
 );
 assert.equal(ops.every((op) => op.op === "set"), true, "every op is a set");
